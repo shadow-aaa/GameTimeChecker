@@ -1,140 +1,95 @@
 import psutil
+import pygetwindow as gw
 import tkinter as tk
-from tkinter import simpledialog, messagebox, ttk
-import configparser
-import threading
+from tkinter import simpledialog, messagebox
 import time
+import threading
+from pystray import Icon, Menu, MenuItem
+from PIL import Image, ImageDraw
 import win32gui
 import win32process
 
-# 读取配置文件中的游戏进程路径
-def load_process_paths_from_config():
-    config = configparser.ConfigParser()
-    config.read('appconfig.ini')
-    if 'Games' in config:
-        return config['Games']
-    return {}
+# 创建系统托盘图标
+def create_image():
+    # 创建一个简单的黑白托盘图标
+    width = 64
+    height = 64
+    image = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((width // 4, height // 4, width * 3 // 4, height * 3 // 4), fill="black")
+    return image
 
-# 保存新的游戏进程路径到配置文件
-def save_process_path_to_config(process_path ):
-    config = configparser.ConfigParser()
-    config.read('appconfig.ini')
-    if 'Games' not in config:
-        config['Games'] = {}
-    config['Games'] [process_path]= ''  
-    with open('appconfig.ini', 'w') as configfile:
-        config.write(configfile)
+def on_quit(icon, item):
+    icon.stop()
 
-# 获取窗口句柄对应的进程ID
-def get_pid_from_hwnd(hwnd):
+def show_app_window():
+    root.deiconify()
+
+def hide_app_window():
+    root.withdraw()
+
+def monitor_process(pid, run_time, title):
+    start_time = time.time()
+    while True:
+        current_time = time.time()
+        elapsed_time = (current_time - start_time) / 60  # 转换为分钟
+        if elapsed_time > run_time:
+            if psutil.pid_exists(pid):
+                root.after(0, lambda: messagebox.showwarning("时间到", f"{title} 运行超时！"))
+            break
+        time.sleep(60)
+
+def on_select_title():
+    selected_title = title_var.get()
+
+    # 获取窗口句柄
+    hwnd = win32gui.FindWindow(None, selected_title)
+    if hwnd == 0:
+        messagebox.showerror("错误", "无法找到与所选标题对应的窗口")
+        return
+
+    # 获取进程ID
     _, pid = win32process.GetWindowThreadProcessId(hwnd)
-    return pid
 
-# 获取所有具有窗口的进程路径和标题
-def get_windowed_processes():
-    windowed_processes = {}
+    if pid is None:
+        messagebox.showerror("错误", "无法找到与所选标题对应的进程")
+        return
 
-    def enum_windows_callback(hwnd, _):
-        if win32gui.IsWindowVisible(hwnd) and win32gui.GetWindowText(hwnd) != '':
-            pid = get_pid_from_hwnd(hwnd)
-            try:
-                process = psutil.Process(pid)
-                exe_path = process.exe()
-                window_title = win32gui.GetWindowText(hwnd)
-                if window_title not in windowed_processes:
-                    windowed_processes[window_title] = exe_path
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                pass
-
-    win32gui.EnumWindows(enum_windows_callback, None)
-    return windowed_processes
-
-# 弹出询问窗口让用户输入游戏时长
-def ask_play_time(window_title):
-    root = tk.Tk()
-    root.withdraw()  # 隐藏主窗口
-    play_time = simpledialog.askfloat("游戏时长", f"窗口'{window_title}'启动，\n请输入想玩的小时数（可以是小数）：")
-    root.destroy()
-    return play_time
-
-# 计时器到时提醒
-def timer(process_path, play_time):
-    time.sleep(play_time * 3600)  # 小时转为秒
-    messagebox.showinfo("提醒", f"'{process_path}' 时间到了！")
-
-# 添加新游戏进程到配置文件
-def add_new_game():
-    windowed_processes = get_windowed_processes()
-    if windowed_processes:
-        root = tk.Tk()
-        root.title("选择游戏窗口")
-        
-        def on_select(event):
-            selected_title = combobox.get()
-            if selected_title in windowed_processes:
-                selected_path = windowed_processes[selected_title]
-                save_process_path_to_config(selected_path)
-                root.destroy()
-            else:
-                messagebox.showwarning("警告", "请选择一个有效的窗口。")
-        
-        tk.Label(root, text="选择窗口标题:").pack(pady=10)
-        combobox = ttk.Combobox(root, values=list(windowed_processes.keys()), width=80)
-        combobox.pack(pady=10)
-        combobox.bind("<<ComboboxSelected>>", on_select)
-        
-        select_button = tk.Button(root, text="确定选择", command=lambda: on_select(None))
-        select_button.pack(pady=10)
-        
-        root.mainloop()
-    else:
-        messagebox.showwarning("警告", "未检测到任何具有窗口的进程。")
-
-# 检测目标进程路径是否正在运行
-def check_process_paths(target_paths):
-    current_paths = set()
-    for proc in psutil.process_iter(['pid', 'exe']):
-        try:
-            if proc.info['exe']:
-                current_paths.add(proc.info['exe'])
-        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-            continue
-
-    for path in target_paths:
-        if path in current_paths:
-            return path
-    return None
-
-# 主程序逻辑
-def main():
-    # 加载配置文件中已有的游戏进程路径
-    process_paths = load_process_paths_from_config()
+    # 输入监控时间
+    run_time = simpledialog.askfloat("输入时间", "请输入运行时间（分钟）：", minvalue=0.1)
     
-    # 创建一个按钮来录入新游戏进程
-    root = tk.Tk()
-    root.title("游戏时长管理")
-    
-    def on_add_button_click():
-        add_new_game()
-    
-    add_button = tk.Button(root, text="录入新游戏窗口", command=on_add_button_click)
-    add_button.pack(pady=20)
-    
-    def check_game_process():
-        process_paths = load_process_paths_from_config()
-        running_path = check_process_paths(process_paths.values())
-        if running_path:
-            for title, path in process_paths.items():
-                if path == running_path:
-                    play_time = ask_play_time(title)
-                    if play_time:
-                        threading.Thread(target=timer, args=(running_path, play_time)).start()
-                    break
-        
-        root.after(60000, check_game_process)  # 每分钟检测一次
-    
-    check_game_process()
-    root.mainloop()
+    if run_time is None:
+        return  # 用户取消输入时间
 
-if __name__ == '__main__':
-    main()
+    # 隐藏窗口并置于系统托盘
+    hide_app_window()
+
+    # 启动后台线程监控进程
+    threading.Thread(target=monitor_process, args=(pid, run_time, selected_title)).start()
+
+    # 创建托盘图标
+    menu = Menu(MenuItem('显示主界面', show_app_window), MenuItem('退出', on_quit))
+    icon = Icon("进程监控", create_image(), "进程监控", menu)
+    icon.run_detached()
+
+# 获取当前所有窗口的标题
+window_titles = [title for title in gw.getAllTitles() if title]
+
+# 创建主窗口
+root = tk.Tk()
+root.title("进程监控")
+root.geometry("300x150")
+
+# 创建下拉框选择窗口标题
+title_var = tk.StringVar(root)
+title_var.set(window_titles[0])  # 设置默认选项
+
+tk.Label(root, text="请选择要监控的窗口标题：").pack(pady=10)
+title_dropdown = tk.OptionMenu(root, title_var, *window_titles)
+title_dropdown.pack(pady=10)
+
+# 确认按钮
+tk.Button(root, text="确认", command=on_select_title).pack(pady=10)
+
+# 启动Tkinter主循环
+root.mainloop()
